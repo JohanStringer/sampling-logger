@@ -1,6 +1,9 @@
-/* Offline support: app shell served from cache (refreshed in the background),
-   map tiles and fonts cached as they are viewed. Bump VERSION when releasing. */
-const VERSION = 'msl-0.2.0';
+/* Offline support.
+   - The app files are stored per version. A new version (new VERSION below) is downloaded in the
+     background and waits; the app then offers "update now", which activates it and reloads.
+   - Map tiles and fonts are cached as they are viewed.
+   Bump VERSION for every release, otherwise devices will not notice the update. */
+const VERSION = 'msl-0.3.5';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'js/texts.js', 'js/app.js', 'manifest.webmanifest',
   'vendor/leaflet.js', 'vendor/leaflet.css', 'vendor/jszip.min.js', 'vendor/xlsx.full.min.js',
@@ -9,10 +12,14 @@ const SHELL = [
 const TILES = 'msl-tiles', FONTS = 'msl-fonts', MAX_TILES = 3000;
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' bypasses the browser's HTTP cache, so we really get the new files.
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))));
 });
+self.addEventListener('message', e => { if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting(); });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => ![VERSION, TILES, FONTS].includes(k)).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(k => ![VERSION, TILES, FONTS].includes(k)).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
 });
 
 async function trim(cacheName, max) {
@@ -26,11 +33,12 @@ async function cacheFirst(req, cacheName) {
   if (res.ok || res.type === 'opaque') { c.put(req, res.clone()); if (cacheName === TILES) trim(TILES, MAX_TILES); }
   return res;
 }
-async function staleWhileRevalidate(req) {
+async function appFile(req) {
   const c = await caches.open(VERSION);
-  const hit = await c.match(req, { ignoreSearch: true });
-  const net = fetch(req).then(res => { if (res.ok) c.put(req, res.clone()); return res; }).catch(() => null);
-  return hit || (await net) || (req.mode === 'navigate' ? c.match('index.html') : Response.error());
+  const hit = await c.match(req, { ignoreSearch: true }) || (req.mode === 'navigate' ? await c.match('index.html') : null);
+  if (hit) return hit;
+  try { return await fetch(req); }
+  catch (e) { return req.mode === 'navigate' ? c.match('index.html') : Response.error(); }
 }
 
 self.addEventListener('fetch', e => {
@@ -38,5 +46,5 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   if (url.hostname.endsWith('tile.openstreetmap.org')) return e.respondWith(cacheFirst(req, TILES));
   if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') return e.respondWith(cacheFirst(req, FONTS));
-  if (url.origin === location.origin) return e.respondWith(staleWhileRevalidate(req));
+  if (url.origin === location.origin) return e.respondWith(appFile(req));
 });

@@ -254,3 +254,15 @@ body.editing .no-edit [data-t] { outline: none; cursor: auto; }
 .cols { display: flex; flex-direction: column; gap: 14px; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+.tool:disabled { opacity: .45; cursor: not-allowed; }
+.tool:disabled .ic { color: var(--muted); }
+.danger-text { color: var(--eosin); }
+.gpsbox { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 12px 14px; border-radius: var(--r); }
+.gpsbox > .ic { flex: none; }
+.gpsbox-text { flex: 1 1 200px; display: flex; flex-direction: column; gap: 2px; font-size: 14.5px; }
+.gpsbox.alert { background: color-mix(in srgb, var(--eosin) 14%, var(--surface)); border: 1.5px solid var(--eosin); color: var(--ink); }
+.gpsbox.alert > .ic, .gpsbox.alert b { color: var(--eosin); }
+.gpsbox.alert .btn { background: var(--eosin); color: #fff; }
+.gpsbox.info { background: var(--info-soft); color: var(--info); font-weight: 700; }
+#updatebar { position: fixed; z-index: 45; left: 50%; transform: translateX(-50%); top: calc(68px + env(safe-area-inset-top, 0px)); display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px); background: var(--accent); color: var(--accent-ink); padding: 6px 6px 6px 16px; border-radius: 99px; font-weight: 700; font-size: 14.5px; box-shadow: var(--shadow); }
+#updatebar .btn { background: var(--accent-ink); color: var(--accent); min-height: 36px; white-space: nowrap; }

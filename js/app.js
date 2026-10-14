@@ -5,7 +5,7 @@
    Transfer    : the phone builds a package ZIP of dirty excursions; the laptop imports it and
                  replaces those excursions completely. Texts: js/texts.js + local overrides. */
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.5';
 const FORMAT = 'micro-sampling-logger';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -22,6 +22,7 @@ const state = {
   saveTimer: null, gps: null, rec: null, map: null, installEvt: null, pendingHandle: null,
 };
 const isLaptop = () => state.mode === 'laptop';
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: window-controls-overlay)').matches || navigator.standalone === true;
 
 /* ---------------- Phone storage (IndexedDB, memory fallback) ---------------- */
 const Store = (() => {
@@ -328,16 +329,21 @@ function dictate(field, btn) {
   const base = field.value; const sep = base && !/\s$/.test(base) ? ' ' : '';
   r.onresult = e => {
     let txt = ''; for (const res of e.results) txt += res[0].transcript;
-    if (!base && txt) txt = txt[0].toUpperCase() + txt.slice(1);
+    if (txt && (!base.trim() || /[.!?]\s*$/.test(base))) txt = txt[0].toUpperCase() + txt.slice(1);
     field.value = base + sep + txt; field.dispatchEvent(new Event('input', { bubbles: true }));
   };
-  r.onerror = e => toast(e.error === 'not-allowed' || e.error === 'service-not-allowed' ? t('dict.denied') : e.error === 'no-speech' ? t('dict.noSpeech') : t('dict.error'), 'warn');
+  r.onerror = e => {
+    const key = e.error === 'not-allowed' ? 'dict.denied' : e.error === 'service-not-allowed' ? 'dict.noService'
+      : e.error === 'no-speech' ? 'dict.noSpeech' : e.error === 'network' ? 'dict.network' : 'dict.error';
+    toast(`${t(key)} (${e.error})`, 'warn');
+  };
   r.onend = () => { btn.classList.remove('rec'); if (state.rec === r) state.rec = null; };
   state.rec = r; btn.classList.add('rec');
   try { r.start(); } catch (e) { btn.classList.remove('rec'); state.rec = null; toast(t('dict.error'), 'warn'); }
 }
 
 /* ---------------- GPS (phone) ---------------- */
+const toFix = p => ({ lat: +p.coords.latitude.toFixed(7), lon: +p.coords.longitude.toFixed(7), acc: Math.round(p.coords.accuracy), alt: p.coords.altitude != null ? Math.round(p.coords.altitude) : null, time: new Date(p.timestamp).toISOString() });
 function startGPS(onUpdate, onDone) {
   if (!navigator.geolocation) { onDone(null, 'unsupported'); return null; }
   let best = null, finished = false, wid = null;
@@ -347,13 +353,27 @@ function startGPS(onUpdate, onDone) {
   };
   const timer = setTimeout(() => finish('timeout'), 25000);
   wid = navigator.geolocation.watchPosition(p => {
-    const c = p.coords;
-    const g = { lat: +c.latitude.toFixed(7), lon: +c.longitude.toFixed(7), acc: Math.round(c.accuracy), alt: c.altitude != null ? Math.round(c.altitude) : null, time: new Date(p.timestamp).toISOString() };
+    const g = toFix(p);
     if (!best || g.acc <= best.acc) { best = g; onUpdate(best); }
     if (g.acc <= 6) finish();
-  }, err => { if (err.code === 1 || !best) finish(err.code === 1 ? 'denied' : 'failed'); }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+  }, err => { if (err.code === 1) finish('denied'); /* no signal yet: keep trying until the timer ends */ }, { enableHighAccuracy: true, maximumAge: 0 });
   return { stop: () => finish('stopped') };
 }
+// Keeps the GPS receiver warm while you work inside an excursion on the phone,
+// so a new location gets an accurate fix straight away.
+const Warm = {
+  wid: null, last: null, error: null,
+  start() {
+    if (isLaptop() || this.wid != null) return;
+    if (!navigator.geolocation) { this.error = 'unsupported'; renderGpsBox(); return; }
+    this.wid = navigator.geolocation.watchPosition(
+      p => { this.last = toFix(p); if (this.error) { this.error = null; renderGpsBox(); } },
+      err => { this.error = err.code === 1 ? 'denied' : 'unavailable'; renderGpsBox(); },
+      { enableHighAccuracy: true, maximumAge: 0 });
+  },
+  stop() { if (this.wid != null) { navigator.geolocation.clearWatch(this.wid); this.wid = null; } },
+  fresh() { return this.last && Date.now() - Date.parse(this.last.time) < 20000 ? this.last : null; },
+};
 function stopGPS() { if (state.gps) { state.gps.stop(); state.gps = null; } }
 
 /* ---------------- Saving ---------------- */
@@ -380,7 +400,7 @@ function bindFields(obj, ...touchObjs) {
   $$('[data-bind]', $('#main')).forEach(el => {
     el.addEventListener('input', () => {
       obj[el.dataset.bind] = el.value; changed(obj, ...touchObjs);
-      if (el.dataset.live) { const h = $('#hdr-title'); if (h) h.textContent = el.value; }
+      if (el.dataset.live) { const h = $('#hdr-title'); if (h) h.textContent = el.value.trim() || el.dataset.fallback || ''; }
     });
   });
 }
@@ -407,11 +427,11 @@ function shell({ title, back, crumb, actions = [], bottom = [], mainCls = '' }) 
   return main;
 }
 const micBtn = target => (isLaptop() ? '' : `<button type="button" class="mic" data-mic="${target}" aria-label="${esc(t('dict.button'))}">${icon('mic')}</button>`);
-function field({ id, bind, label, value, placeholder, multiline, optional, live }) {
+function field({ id, bind, label, value, placeholder, multiline, optional, live, fallback }) {
   const ph = placeholder ? `placeholder="${esc(placeholder)}"` : '';
   const input = multiline
     ? `<textarea id="${id}" data-bind="${bind}" rows="3" ${ph}>${esc(value)}</textarea>`
-    : `<input id="${id}" data-bind="${bind}" ${live ? 'data-live="1"' : ''} value="${esc(value)}" ${ph} autocomplete="off">`;
+    : `<input id="${id}" data-bind="${bind}" ${live ? 'data-live="1"' : ''} ${fallback ? `data-fallback="${esc(fallback)}"` : ''} value="${esc(value)}" ${ph} autocomplete="off">`;
   return `<div class="field"><label for="${id}">${label}${optional ? ` <span class="opt">${tt('common.optional')}</span>` : ''}</label>
     <div class="field-row">${input}${micBtn(id)}</div></div>`;
 }
@@ -487,7 +507,7 @@ function viewLibrarySetup() {
 }
 
 async function newExcursion() {
-  const e = { id: uid(), title: t('exc.defaultTitle', { date: fmtDay(now()) }), goal: '', created: now(), updated: now(), dirty: true, locations: [] };
+  const e = { id: uid(), title: '', goal: '', created: now(), updated: now(), dirty: true, locations: [] };
   await Store.putExc(e); state.exc = e;
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (err) {}
   location.hash = `#/e/${e.id}`;
@@ -501,27 +521,28 @@ async function viewExcursion(eid) {
     bottom: L ? [] : [{ html: tt('loc.add'), icon: 'plus', primary: true, grow: true, onclick: () => addLocation(e) }],
   });
   main.innerHTML = `
+    ${L ? '' : '<div id="gpsbox"></div>'}
     <section class="card">
-      ${field({ id: 'f-title', bind: 'title', label: tt('exc.title'), value: e.title, live: true })}
+      ${field({ id: 'f-title', bind: 'title', label: tt('exc.title'), value: e.title, live: true, fallback: t('exc.untitled'), placeholder: t('common.autoPh') })}
       ${field({ id: 'f-goal', bind: 'goal', label: tt('exc.goal'), value: e.goal, multiline: true, optional: true, placeholder: t('exc.goalPh') })}
       <div class="meta-line">${tt('common.created')}: ${esc(fmtDate(e.created))} ${statusPill(e)}</div>
       ${L && e.library && e.library.importedAt ? `<div class="meta-line">${tt('lib.importedAt', { date: fmtDate(e.library.importedAt) })} · <span class="mono">${esc(Lib.folderOf(e.id) || '')}</span></div>` : ''}
     </section>
     <div class="tools">
-      <a class="tool" href="#/e/${e.id}/map">${icon('map')}${tt('exc.mapAll')}</a>
-      <button class="tool" id="t-gm">${icon('ext')}${tt('exc.googleRoute')}</button>
+      ${mapTool(`#/e/${e.id}/map`, 'exc.mapAll', e.locations.some(l => l.gps))}
+      <button class="tool" id="t-gm" ${e.locations.some(l => l.gps) ? '' : 'disabled'}>${icon('ext')}${tt('exc.googleRoute')}</button>
       ${L ? '' : `<button class="tool" id="t-exp">${icon('send')}${tt('sync.sendThis')}</button>`}
     </div>
     <h2 class="sec">${tt('loc.listTitle')} <span class="count">${c.locs}</span></h2>
     ${e.locations.length ? `<ul class="list ${L ? 'grid' : ''}">${e.locations.map((l, i) => `<li><a class="row" href="#/e/${e.id}/l/${l.id}">
       <span class="idx">${i + 1}</span>
       ${l.photos[0] ? `<img class="thumb" data-photo="${esc(l.photos[0])}" alt="">` : ''}
-      <div class="row-main"><div class="row-title">${esc(l.title)}</div>
-      <div class="row-meta">${l.gps ? `<span class="mono">${fmtCoord(l.gps)}</span>` : esc(t('gps.none'))} · ${esc(t('count.samples', { n: l.samples.length }))}</div></div>
+      <div class="row-main"><div class="row-title">${esc(locTitle(l, i))}</div>
+      <div class="row-meta">${l.gps ? `<span class="mono">${fmtCoord(l.gps)}</span>` : `<span class="danger-text">${esc(t('gps.none'))}</span>`} · ${esc(t('count.samples', { n: l.samples.length }))}</div></div>
       ${icon('chev', 'chev')}</a></li>`).join('')}</ul>`
       : `<p class="hint">${tt(L ? 'loc.emptyHintLaptop' : 'loc.emptyHint')}</p>`}
     <div class="danger-zone"><button class="btn ghost danger-text" id="t-del">${icon('trash')}${tt(L ? 'exc.deleteLaptop' : 'exc.delete')}</button></div>`;
-  bindFields(e); wireMics(); hydratePhotos(main);
+  bindFields(e); wireMics(); hydratePhotos(main); renderGpsBox();
   $('#t-gm').addEventListener('click', () => {
     const u = gmapsRoute(e.locations);
     if (!u) return toast(t('map.noPoints'));
@@ -536,48 +557,100 @@ async function viewExcursion(eid) {
   });
 }
 
+const locTitle = (l, i) => l.title.trim() || t('loc.defaultTitle', { n: i + 1 });
+const mapTool = (href, label, enabled, attr = '') => (enabled
+  ? `<a class="tool" href="${href}" ${attr}>${icon('map')}${tt(label)}</a>`
+  : `<button class="tool" disabled ${attr}>${icon('map')}${tt(label)}</button>`);
+
+// A title left empty gets an automatic one once something is added below it.
+async function autoTitleExcursion(e) {
+  if (e.title.trim()) return;
+  const all = (await Store.listExc()).sort((a, b) => (a.created || '').localeCompare(b.created || ''));
+  const n = all.findIndex(x => x.id === e.id) + 1 || all.length + 1;
+  e.title = t('exc.autoTitle', { n });
+}
+function autoTitleLocation(e, l) { if (!l.title.trim()) l.title = t('loc.defaultTitle', { n: e.locations.indexOf(l) + 1 }); }
+function nextSampleNumber(e) {
+  let max = 0, count = 0;
+  e.locations.forEach(l => l.samples.forEach(s => { count++; const m = /^\s*(\d+)/.exec(s.title); if (m) max = Math.max(max, +m[1]); }));
+  return Math.max(max, count) + 1;
+}
+
 async function addLocation(e) {
-  const l = { id: uid(), title: t('loc.defaultTitle', { n: e.locations.length + 1 }), description: '', gps: null, photos: [], samples: [], created: now(), updated: now() };
+  await autoTitleExcursion(e);
+  const l = { id: uid(), title: '', description: '', gps: null, photos: [], samples: [], created: now(), updated: now() };
   e.locations.push(l); await changedNow(l);
-  location.hash = `#/e/${e.id}/l/${l.id}?new=1`;
+  captureLocationGPS(e.id, l.id);
+  location.hash = `#/e/${e.id}/l/${l.id}`;
+}
+
+// Records the position of a new location in the background; keeps running when you move on to a sample.
+function captureLocationGPS(excId, locId) {
+  const apply = async g => {
+    const e = state.exc && state.exc.id === excId ? state.exc : await Store.getExc(excId);
+    const l = e && e.locations.find(x => x.id === locId); if (!l) return;
+    if (l.gps && l.gps.acc < g.acc) return; // keep the more accurate fix
+    l.gps = g; l.updated = now(); e.updated = now(); e.dirty = true;
+    if (e === state.exc) { state.excChanged = true; await flushSave(); } else await Store.putExc(e);
+    renderGpsBox();
+    const btn = $(`[data-maploc="${locId}"]`);
+    if (btn && btn.tagName === 'BUTTON') btn.outerHTML = mapTool(`#/e/${excId}/l/${locId}/map`, 'loc.showOnMap', true, `data-maploc="${locId}"`);
+  };
+  stopGPS();
+  const warm = Warm.fresh(); if (warm) apply(warm);
+  state.gpsLoc = locId;
+  state.gps = startGPS(g => { apply(g); }, (g, err) => {
+    state.gps = null; state.gpsLoc = null;
+    if (!g && !warm && err !== 'stopped') {
+      if (err === 'denied') Warm.error = 'denied';
+      if (!$(`#gpsbox[data-loc="${locId}"]`)) toast(t(err === 'denied' ? 'gps.denied' : err === 'unsupported' ? 'gps.unsupported' : 'gps.notRecorded'), 'warn');
+    }
+    renderGpsBox();
+  });
+  renderGpsBox();
+}
+
+// Red warning (phone only): this location has no coordinates yet, or GPS is unavailable.
+function renderGpsBox() {
+  const box = $('#gpsbox'); if (!box || isLaptop()) return;
+  const lid = box.dataset.loc;
+  const l = lid && state.exc && state.exc.locations.find(x => x.id === lid);
+  let html = '';
+  if (l && !l.gps) {
+    html = state.gps && state.gpsLoc === lid
+      ? `<div class="gpsbox info">${icon('crosshair')}<div class="gpsbox-text">${tt('gps.measuring')}</div></div>`
+      : `<div class="gpsbox alert" role="alert">${icon('crosshair')}<div class="gpsbox-text"><b>${tt('gps.missingTitle')}</b>
+          <span>${tt(Warm.error === 'denied' ? 'gps.denied' : 'gps.missingBody')}</span></div>
+          <button class="btn small" id="gps-again">${icon('crosshair')}${tt('gps.measureAgain')}</button></div>`;
+  } else if (!l && Warm.error) {
+    html = `<div class="gpsbox alert" role="alert">${icon('crosshair')}<div class="gpsbox-text"><b>${tt('gps.unavailableTitle')}</b>
+      <span>${tt(Warm.error === 'denied' ? 'gps.denied' : 'gps.waitForSignal')}</span></div></div>`;
+  }
+  box.innerHTML = html;
+  const again = $('#gps-again');
+  if (again) again.addEventListener('click', () => { if (state.exc) captureLocationGPS(state.exc.id, lid); });
 }
 async function deleteLocationPhotos(l) {
   for (const p of l.photos) await removePhoto(p);
   for (const s of l.samples) for (const k of PHOTO_KEYS) await removePhoto(s[k]);
 }
 
-function gpsBlock(l, acquiring) {
-  const g = l.gps, L = isLaptop();
-  return `<div class="gps ${acquiring ? 'busy' : ''}">
-    <div class="gps-head">${icon('crosshair')}<span>${tt('gps.title')}</span>
-      ${acquiring ? `<span class="pill info">${tt('gps.acquiring')}</span>` : g && !g.manual ? `<span class="pill ${g.acc <= 15 ? 'ok' : 'warn'}">± ${g.acc} m</span>` : ''}</div>
-    ${g ? `<div class="gps-coords mono">${(+g.lat).toFixed(6)}<br>${(+g.lon).toFixed(6)}</div>
-      <div class="meta-line">${g.alt != null ? esc(t('gps.altitude', { m: g.alt })) + ' · ' : ''}${g.manual ? tt('gps.manual') : esc(fmtDate(g.time))}</div>`
-      : `<div class="meta-line">${tt(acquiring ? 'gps.wait' : 'gps.none')}</div>`}
-    <div class="gps-actions">
-      ${L ? '' : acquiring ? `<button class="btn small primary" id="g-stop">${tt('gps.useNow')}</button>`
-        : `<button class="btn small ghost" id="g-get">${icon('crosshair')}${tt(g ? 'gps.update' : 'gps.get')}</button>`}
-      <button class="btn small ghost" id="g-edit">${icon('edit')}${tt('gps.editManual')}</button>
-      ${g ? `<a class="btn small ghost" href="${gmapsOne(g)}" target="_blank" rel="noopener">${icon('ext')}${tt('map.google')}</a>` : ''}
-    </div></div>`;
-}
-
-async function viewLocation(eid, lid, isNew) {
+async function viewLocation(eid, lid) {
   const e = await loadExc(eid); if (!e) return notFound();
   const idx = e.locations.findIndex(x => x.id === lid); const l = e.locations[idx]; if (!l) return notFound();
   const L = isLaptop();
   const main = shell({
-    title: esc(l.title), back: `#/e/${e.id}`, crumb: `${tt('loc.label')} ${idx + 1} · ${esc(e.title)}`,
+    title: esc(locTitle(l, idx)), back: `#/e/${e.id}`, crumb: `${tt('loc.label')} ${idx + 1} · ${esc(e.title || t('exc.untitled'))}`,
     bottom: L ? [] : [{ html: tt('sample.add'), icon: 'plus', primary: true, grow: true, onclick: () => addSample(e, l) }],
   });
   main.innerHTML = `
+    ${L ? '' : `<div id="gpsbox" data-loc="${l.id}"></div>`}
     <div class="cols"><div>
     <section class="card">
-      ${field({ id: 'f-title', bind: 'title', label: tt('loc.title'), value: l.title, live: true })}
-      <div id="gps-slot"></div>
+      ${field({ id: 'f-title', bind: 'title', label: tt('loc.title'), value: l.title, live: true, fallback: t('loc.defaultTitle', { n: idx + 1 }), placeholder: t('common.autoPh') })}
       ${field({ id: 'f-desc', bind: 'description', label: tt('loc.description'), value: l.description, multiline: true, optional: true, placeholder: t('loc.descriptionPh') })}
     </section>
-    <div class="tools"><a class="tool" href="#/e/${e.id}/l/${l.id}/map">${icon('map')}${tt('loc.showOnMap')}</a></div>
+    <div class="tools">${mapTool(`#/e/${e.id}/l/${l.id}/map`, 'loc.showOnMap', !!l.gps, `data-maploc="${l.id}"`)}</div>
     </div><div>
     <h2 class="sec">${tt('loc.photos')} <span class="opt">${tt('common.optional')}</span></h2>
     <div class="photo-grid" id="lphotos">
@@ -597,41 +670,7 @@ async function viewLocation(eid, lid, isNew) {
         ${icon('chev', 'chev')}</a></li>`; }).join('')}</ul>`
       : `<p class="hint">${tt(L ? 'sample.emptyHintLaptop' : 'sample.emptyHint')}</p>`}
     ${L ? '' : `<div class="danger-zone"><button class="btn ghost danger-text" id="l-del">${icon('trash')}${tt('loc.delete')}</button></div>`}`;
-  bindFields(l); wireMics(); hydratePhotos(main);
-
-  const renderGPS = acquiring => {
-    $('#gps-slot').innerHTML = gpsBlock(l, acquiring);
-    const get = $('#g-get'); if (get) get.addEventListener('click', acquire);
-    const stop = $('#g-stop'); if (stop) stop.addEventListener('click', stopGPS);
-    $('#g-edit').addEventListener('click', editManual);
-  };
-  const acquire = () => {
-    stopGPS(); renderGPS(true);
-    state.gps = startGPS(g => { l.gps = g; changed(l); renderGPS(true); }, (g, err) => {
-      state.gps = null;
-      if (!$('#gps-slot')) return;
-      if (!g) toast(t(err === 'denied' ? 'gps.denied' : err === 'unsupported' ? 'gps.unsupported' : 'gps.failed'), 'warn');
-      renderGPS(false); flushSave();
-    });
-  };
-  const editManual = () => {
-    const g = l.gps || {};
-    const m = modal(`<h3>${tt('gps.editManual')}</h3>
-      <div class="field"><label for="m-lat">${tt('gps.lat')}</label><input id="m-lat" inputmode="decimal" value="${g.lat ?? ''}"></div>
-      <div class="field"><label for="m-lon">${tt('gps.lon')}</label><input id="m-lon" inputmode="decimal" value="${g.lon ?? ''}"></div>
-      <p class="hint">${tt('gps.manualHint')}</p>
-      <div class="modal-actions"><button class="btn ghost" data-a="no">${tt('common.cancel')}</button><button class="btn primary" data-a="ok">${tt('common.save')}</button></div>`);
-    m.el.addEventListener('click', ev => {
-      const a = ev.target.closest('[data-a]'); if (!a) return;
-      if (a.dataset.a === 'no') return m.close();
-      const parse = v => parseFloat(String(v).replace(',', '.'));
-      const lat = parse($('#m-lat').value), lon = parse($('#m-lon').value);
-      if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) return toast(t('gps.invalid'), 'warn');
-      stopGPS(); l.gps = { lat, lon, acc: 0, alt: null, time: now(), manual: true }; changedNow(l); m.close(); renderGPS(false);
-    });
-  };
-  renderGPS(false);
-  if (isNew && !l.gps && !L) acquire();
+  bindFields(l); wireMics(); hydratePhotos(main); renderGpsBox();
 
   $$('#lphotos [data-p]').forEach(b => b.addEventListener('click', () => viewPhoto(b.dataset.p, L ? {} : {
     onDelete: async () => { await removePhoto(b.dataset.p); l.photos = l.photos.filter(p => p !== b.dataset.p); await changedNow(l); route(); },
@@ -645,14 +684,15 @@ async function viewLocation(eid, lid, isNew) {
   $('#lp-cam').addEventListener('click', () => addPhotos(true));
   $('#lp-gal').addEventListener('click', () => addPhotos(false));
   $('#l-del').addEventListener('click', async () => {
-    if (!await confirmDlg(t('loc.confirmDelete', { title: l.title, n: l.samples.length }), t('common.delete'))) return;
-    stopGPS(); await deleteLocationPhotos(l);
+    if (!await confirmDlg(t('loc.confirmDelete', { title: locTitle(l, idx), n: l.samples.length }), t('common.delete'))) return;
+    await deleteLocationPhotos(l);
     e.locations = e.locations.filter(x => x !== l); await changedNow(); location.hash = `#/e/${e.id}`;
   });
 }
 
 async function addSample(e, l) {
-  const s = { id: uid(), title: t('sample.defaultTitle', { n: l.samples.length + 1 }), notes: '', container: null, specimen: null, context: null, created: now(), updated: now() };
+  await autoTitleExcursion(e); autoTitleLocation(e, l);
+  const s = { id: uid(), title: `${nextSampleNumber(e)}. `, notes: '', container: null, specimen: null, context: null, created: now(), updated: now() };
   l.samples.push(s); await changedNow(l, s);
   location.hash = `#/e/${e.id}/l/${l.id}/s/${s.id}`;
 }
@@ -669,7 +709,7 @@ async function viewSample(eid, lid, sid) {
   const L = isLaptop();
   const prev = l.samples[si - 1], next = l.samples[si + 1];
   const main = shell({
-    title: esc(s.title), back: `#/e/${e.id}/l/${l.id}`, crumb: `${esc(l.title)} · ${esc(e.title)}`,
+    title: esc(s.title), back: `#/e/${e.id}/l/${l.id}`, crumb: `${esc(locTitle(l, e.locations.indexOf(l)))} · ${esc(e.title || t('exc.untitled'))}`,
     bottom: L ? [] : [
       { html: tt('common.done'), icon: 'check', onclick: () => { location.hash = `#/e/${e.id}/l/${l.id}`; } },
       { html: tt('sample.next'), icon: 'plus', primary: true, grow: true, onclick: () => addSample(e, l) },
@@ -783,7 +823,12 @@ async function viewSettings() {
       <p class="hint">${tt('set.editModeHint')}</p>
       <a class="btn ghost full" href="#/texts">${icon('edit')}${tt('set.openTexts')}</a>
     </section>
-    ${state.installEvt ? `<button class="btn primary full" id="s-install">${icon('download')}${tt('set.install')}</button>` : ''}
+    <h2 class="sec">${tt('set.installTitle')}</h2>
+    <section class="card">
+      ${isStandalone() ? `<p class="hint">${tt('set.installed')}</p>`
+        : `${state.installEvt ? `<button class="btn primary full" id="s-install">${icon('download')}${tt('set.install')}</button>` : ''}
+           <p class="hint">${tt(isLaptop() ? 'set.installHintLaptop' : 'set.installHintPhone')}</p>`}
+    </section>
     <h2 class="sec">${tt('set.about')}</h2>
     <section class="card">${L ? '' : `<p class="hint">${tt('set.dictationHint')}</p>`}<div class="meta-line mono">v${APP_VERSION}</div></section>`;
   const saveSettings = () => Store.kvSet('settings', state.settings);
@@ -795,7 +840,11 @@ async function viewSettings() {
   const sa = $('#s-sendall'); if (sa) sa.addEventListener('click', async () => sendPackage((await Store.listExc()).map(e => e.id)));
   const im = $('#s-import'); if (im) im.addEventListener('click', importPackagePhone);
   const p = $('#s-persist'); if (p) p.addEventListener('click', async () => { const ok = await navigator.storage.persist(); toast(t(ok ? 'set.persisted' : 'set.persistRefused'), ok ? '' : 'warn'); route(); });
-  const ins = $('#s-install'); if (ins) ins.addEventListener('click', async () => { state.installEvt.prompt(); state.installEvt = null; route(); });
+  const ins = $('#s-install'); if (ins) ins.addEventListener('click', async () => {
+    const ev = state.installEvt; state.installEvt = null;   // the browser allows one prompt per event
+    try { ev.prompt(); await ev.userChoice; } catch (e) {}
+    route();
+  });
 }
 
 async function viewTexts() {
@@ -840,21 +889,75 @@ function setEditPill() {
   $('#edit-off').addEventListener('click', () => { setEditMode(false); route(); });
 }
 function setEditMode(on) { I18N.edit = on; document.body.classList.toggle('editing', on); $('#editpill').hidden = !on; }
+// Machine translation for the text editor: Chrome's on-device translator when available, else MyMemory.
+const translators = {};
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+async function translateText(text, from, to) {
+  if (!text.trim() || from === to) return text;
+  const keep = []; // protect {placeholders}
+  const masked = text.replace(/\{\w+\}/g, m => { keep.push(m); return `{${keep.length - 1}}`; });
+  let out = null;
+  try {
+    if ('Translator' in self) {
+      const k = from + '>' + to;
+      const av = await withTimeout(Translator.availability({ sourceLanguage: from, targetLanguage: to }), 2500);
+      if (av === 'available') {
+        translators[k] = translators[k] || Translator.create({ sourceLanguage: from, targetLanguage: to });
+        out = await withTimeout((async () => (await translators[k]).translate(masked))(), 6000);
+      } else if (av === 'downloadable' && !translators[k]) {
+        translators[k] = Translator.create({ sourceLanguage: from, targetLanguage: to }); // download for next time
+        translators[k].catch(() => { delete translators[k]; });
+      }
+    }
+  } catch (e) { out = null; }
+  if (!out) {
+    const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(masked)}&langpair=${from}|${to}`);
+    const j = await r.json();
+    if (+j.responseStatus !== 200 || !j.responseData || !j.responseData.translatedText) throw new Error('translate failed');
+    out = j.responseData.translatedText;
+  }
+  return out.replace(/\{\s*(\d+)\s*\}/g, (m, i) => keep[+i] ?? m);
+}
+
 function editText(id, after) {
   const def = TEXTS[id] || {};
   const m = modal(`<h3 class="mono tid">${esc(id)}</h3>
-    ${I18N.langs.map(l => `<div class="field"><label for="tx-${l.code}">${esc(l.name)}${I18N.over[id] && I18N.over[id][l.code] != null ? ' <span class="pill info">' + esc(t('texts.edited')) + '</span>' : ''}</label>
-      <textarea id="tx-${l.code}" rows="2">${esc(textValue(id, l.code))}</textarea></div>`).join('')}
+    <p class="hint">${tt('texts.autoHint')}</p>
+    ${I18N.langs.map(l => `<div class="field"><label for="tx-${l.code}">${esc(l.name)}
+      <span class="tx-state" id="txs-${l.code}">${I18N.over[id] && I18N.over[id][l.code] != null ? '<span class="pill info">' + esc(t('texts.edited')) + '</span>' : ''}</span></label>
+      <textarea id="tx-${l.code}" data-lang="${l.code}" rows="2">${esc(textValue(id, l.code))}</textarea></div>`).join('')}
     ${/\{\w+\}/.test(def.en || '') ? `<p class="hint">${tt('texts.placeholderHint')}</p>` : ''}
     <div class="modal-actions">
       ${I18N.over[id] && TEXTS[id] ? `<button class="btn ghost" data-a="reset">${tt('texts.reset')}</button>` : ''}
       <button class="btn ghost" data-a="no">${tt('common.cancel')}</button>
       <button class="btn primary" data-a="ok">${tt('common.save')}</button></div>`, 'no-edit');
+  const typed = new Set(); let timer = null, run = 0;
+  const setState = (code, html) => { const el = $('#txs-' + code, m.el); if (el) el.innerHTML = html; };
+  m.el.addEventListener('input', ev => {
+    const ta = ev.target.closest('textarea[data-lang]'); if (!ta) return;
+    const from = ta.dataset.lang; typed.add(from); setState(from, '');
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const mine = ++run; const text = ta.value;
+      const targets = I18N.langs.map(l => l.code).filter(c => !typed.has(c));
+      targets.forEach(c => setState(c, `<span class="pill info">${esc(t('texts.translating'))}</span>`));
+      let failed = false;
+      await Promise.all(targets.map(async c => {
+        try {
+          const out = await translateText(text, from, c);
+          if (mine !== run || typed.has(c)) return;
+          $('#tx-' + c, m.el).value = out; setState(c, `<span class="pill warn">${esc(t('texts.autoTranslated'))}</span>`);
+        } catch (e) { failed = true; if (mine === run) setState(c, ''); }
+      }));
+      if (failed && mine === run) toast(t('texts.translateFailed'), 'warn');
+    }, 900);
+  });
   m.el.addEventListener('click', async ev => {
     const a = ev.target.closest('[data-a]'); if (!a) return;
-    if (a.dataset.a === 'no') return m.close();
+    if (a.dataset.a === 'no') { clearTimeout(timer); return m.close(); }
+    clearTimeout(timer); run++;
     if (a.dataset.a === 'reset') delete I18N.over[id];
-    else I18N.langs.forEach(l => setText(id, l.code, $('#tx-' + l.code).value));
+    else I18N.langs.forEach(l => setText(id, l.code, $('#tx-' + l.code, m.el).value));
     await saveTexts(); m.close(); toast(t('common.saved'));
     if (after) after(); else { const y = window.scrollY; await route(); window.scrollTo(0, y); }
     setEditPill();
@@ -900,6 +1003,11 @@ async function sendPackage(ids) {
   await flushSave();
   const excs = (await Promise.all(ids.map(id => Store.getExc(id)))).filter(Boolean);
   if (!excs.length) return toast(t('sync.nothing'));
+  for (const e of excs) {
+    const before = JSON.stringify([e.title, e.locations.map(l => l.title)]);
+    await autoTitleExcursion(e); e.locations.forEach(l => autoTitleLocation(e, l));
+    if (JSON.stringify([e.title, e.locations.map(l => l.title)]) !== before) await Store.putExc(e);
+  }
   const busy = modal(`<p class="modal-msg">${tt('export.building')}</p><div class="bar"><span id="exp-bar"></span></div>`, 'no-edit');
   busy.el.dataset.locked = '1';
   try {
@@ -1079,7 +1187,7 @@ function exportTextsJson() {
 
 /* ---------------- Router ---------------- */
 async function route() {
-  stopGPS(); stopDictation();
+  stopDictation();
   if (state.map) { state.map.remove(); state.map = null; }
   $$('.modal-wrap').forEach(m => m.remove());
   const raw = location.hash.replace(/^#\/?/, '');
@@ -1088,6 +1196,7 @@ async function route() {
   const isNew = /(^|&)new=1/.test(query || '');
   if (isNew) history.replaceState(null, '', '#/' + path);
   document.title = t('app.name');
+  if (p[0] === 'e' && !document.hidden) Warm.start(); else Warm.stop();
   try {
     if (p[0] === 'settings') return await viewSettings();
     if (p[0] === 'texts') return await viewTexts();
@@ -1098,13 +1207,38 @@ async function route() {
       if (p.length === 2) return await viewExcursion(p[1]);
       if (p[2] === 'map') return await viewMap(p[1]);
       if (p[2] === 'l' && p[3]) {
-        if (p.length === 4) return await viewLocation(p[1], p[3], isNew);
+        if (p.length === 4) return await viewLocation(p[1], p[3]);
         if (p[4] === 'map') return await viewMap(p[1], p[3]);
         if (p[4] === 's' && p[5]) return await viewSample(p[1], p[3], p[5]);
       }
     }
     return notFound();
   } catch (err) { console.error(err); toast(t('err.generic'), 'warn'); }
+}
+
+/* ---------------- Updates ---------------- */
+// A new version downloads in the background; then a bar offers to switch to it right away.
+function setupUpdates() {
+  if (!('serviceWorker' in navigator) || IS_ARTIFACT || !/^(https:|http:\/\/localhost)/.test(location.href)) return;
+  let userAsked = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (userAsked) location.reload(); });
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const offer = w => {
+      if (!w || !navigator.serviceWorker.controller) return; // first install: nothing to replace
+      const bar = $('#updatebar');
+      bar.innerHTML = `<span>${esc(t('update.available'))}</span><button class="btn small" id="upd-go">${esc(t('update.now'))}</button>`;
+      bar.hidden = false;
+      $('#upd-go').addEventListener('click', async () => { userAsked = true; await flushSave(); w.postMessage({ type: 'SKIP_WAITING' }); });
+    };
+    if (reg.waiting) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const nw = reg.installing;
+      if (nw) nw.addEventListener('statechange', () => { if (nw.state === 'installed') offer(nw); });
+    });
+    const check = () => reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+    setInterval(check, 30 * 60 * 1000);
+  }).catch(() => {});
 }
 
 /* ---------------- Boot ---------------- */
@@ -1125,9 +1259,13 @@ async function boot() {
   applyMode(); setEditPill();
   window.addEventListener('hashchange', route);
   window.addEventListener('pagehide', flushSave);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) flushSave(); });
-  window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); state.installEvt = ev; });
-  if ('serviceWorker' in navigator && !IS_ARTIFACT && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { flushSave(); Warm.stop(); }
+    else if (/^#\/e\//.test(location.hash)) Warm.start();
+  });
+  window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); state.installEvt = ev; if (/^#\/settings/.test(location.hash)) route(); });
+  window.addEventListener('appinstalled', () => { state.installEvt = null; toast(t('set.installDone')); if (/^#\/settings/.test(location.hash)) route(); });
+  setupUpdates();
   route();
 }
 boot();
