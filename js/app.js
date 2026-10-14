@@ -5,7 +5,7 @@
    Transfer    : the phone builds a package ZIP of dirty excursions; the laptop imports it and
                  replaces those excursions completely. Texts: js/texts.js + local overrides. */
 
-const APP_VERSION = '0.3.5';
+const APP_VERSION = '0.3.6';
 const FORMAT = 'micro-sampling-logger';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -455,6 +455,27 @@ function statusPill(e) {
   return e.dirty ? `<span class="pill warn">${tt('status.dirty')}</span>` : `<span class="pill ok">${tt('status.sent')}</span>`;
 }
 
+// Laptop: a quiet status label on the excursion page; details on click.
+function libStatusButton(e) {
+  const lib = e.library || {};
+  if (!lib.importedAt && !lib.laptopEdited) return '';
+  const edited = lib.laptopEdited && (!lib.importedAt || lib.laptopEdited > lib.importedAt);
+  return `<button class="pill plain" id="lib-info" type="button">${tt(edited ? 'status.correctedHere' : 'status.imported')}</button>`;
+}
+function showImportInfo(e) {
+  const lib = e.library || {};
+  const row = (label, value, mono) => value ? `<div class="info-row"><span class="info-label">${tt(label)}</span><span class="${mono ? 'mono' : ''}">${esc(value)}</span></div>` : '';
+  const m = modal(`<h3>${tt('lib.infoTitle')}</h3>
+    <div class="info-list">
+      ${row('lib.infoImported', lib.importedAt && fmtDate(lib.importedAt))}
+      ${row('lib.infoPackage', lib.source, true)}
+      ${row('lib.infoFolder', Lib.folderOf(e.id), true)}
+      ${row('lib.infoEdited', lib.laptopEdited && fmtDate(lib.laptopEdited))}
+    </div>
+    <div class="modal-actions"><button class="btn primary" data-a="ok">${tt('common.close')}</button></div>`);
+  m.el.addEventListener('click', ev => { if (ev.target.closest('[data-a]')) m.close(); });
+}
+
 /* ---------------- Views ---------------- */
 async function viewHome() {
   state.exc = null;
@@ -525,8 +546,7 @@ async function viewExcursion(eid) {
     <section class="card">
       ${field({ id: 'f-title', bind: 'title', label: tt('exc.title'), value: e.title, live: true, fallback: t('exc.untitled'), placeholder: t('common.autoPh') })}
       ${field({ id: 'f-goal', bind: 'goal', label: tt('exc.goal'), value: e.goal, multiline: true, optional: true, placeholder: t('exc.goalPh') })}
-      <div class="meta-line">${tt('common.created')}: ${esc(fmtDate(e.created))} ${statusPill(e)}</div>
-      ${L && e.library && e.library.importedAt ? `<div class="meta-line">${tt('lib.importedAt', { date: fmtDate(e.library.importedAt) })} · <span class="mono">${esc(Lib.folderOf(e.id) || '')}</span></div>` : ''}
+      <div class="meta-line"><span>${tt('common.created')}: ${esc(fmtDate(e.created))}</span> ${L ? libStatusButton(e) : statusPill(e)}</div>
     </section>
     <div class="tools">
       ${mapTool(`#/e/${e.id}/map`, 'exc.mapAll', e.locations.some(l => l.gps))}
@@ -543,6 +563,7 @@ async function viewExcursion(eid) {
       : `<p class="hint">${tt(L ? 'loc.emptyHintLaptop' : 'loc.emptyHint')}</p>`}
     <div class="danger-zone"><button class="btn ghost danger-text" id="t-del">${icon('trash')}${tt(L ? 'exc.deleteLaptop' : 'exc.delete')}</button></div>`;
   bindFields(e); wireMics(); hydratePhotos(main); renderGpsBox();
+  const info = $('#lib-info'); if (info) info.addEventListener('click', () => showImportInfo(e));
   $('#t-gm').addEventListener('click', () => {
     const u = gmapsRoute(e.locations);
     if (!u) return toast(t('map.noPoints'));

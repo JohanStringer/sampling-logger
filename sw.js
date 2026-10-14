@@ -3,7 +3,7 @@
      background and waits; the app then offers "update now", which activates it and reloads.
    - Map tiles and fonts are cached as they are viewed.
    Bump VERSION for every release, otherwise devices will not notice the update. */
-const VERSION = 'msl-0.3.5';
+const VERSION = 'msl-0.3.6';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'js/texts.js', 'js/app.js', 'manifest.webmanifest',
   'vendor/leaflet.js', 'vendor/leaflet.css', 'vendor/jszip.min.js', 'vendor/xlsx.full.min.js',

@@ -142,7 +142,11 @@ const TEXTS = {
   "lib.readFailed": { en: "The library folder could not be read. Is the NAS reachable?", nl: "De bibliotheekmap kon niet worden gelezen. Is de NAS bereikbaar?", fr: "Le dossier bibliothèque est illisible. Le NAS est-il accessible ?", de: "Der Bibliotheksordner konnte nicht gelesen werden. Ist das NAS erreichbar?" },
   "lib.refresh": { en: "Reload library", nl: "Bibliotheek herladen", fr: "Recharger la bibliothèque", de: "Bibliothek neu laden" },
   "lib.importPackage": { en: "Import from phone", nl: "Importeren van telefoon", fr: "Importer du téléphone", de: "Vom Telefon importieren" },
-  "lib.importedAt": { en: "Imported {date}", nl: "Geïmporteerd {date}", fr: "Importé {date}", de: "Importiert {date}" },
+  "lib.infoTitle": { en: "Import details", nl: "Importgegevens", fr: "Détails de l'import", de: "Importdetails" },
+  "lib.infoImported": { en: "Imported", nl: "Geïmporteerd", fr: "Importé", de: "Importiert" },
+  "lib.infoPackage": { en: "Package", nl: "Pakket", fr: "Paquet", de: "Paket" },
+  "lib.infoFolder": { en: "Folder", nl: "Map", fr: "Dossier", de: "Ordner" },
+  "lib.infoEdited": { en: "Corrected on this laptop", nl: "Gecorrigeerd op deze laptop", fr: "Corrigé sur cet ordinateur", de: "Auf diesem Laptop korrigiert" },
   "lib.emptyTitle": { en: "The library is empty", nl: "De bibliotheek is leeg", fr: "La bibliothèque est vide", de: "Die Bibliothek ist leer" },
   "lib.emptyBody": { en: "On the phone, tap Send to laptop. Then click Import from phone here and choose the package.", nl: "Tik op de telefoon op Naar laptop sturen. Klik hier daarna op Importeren van telefoon en kies het pakket.", fr: "Sur le téléphone, touchez Envoyer à l'ordinateur. Puis cliquez ici sur Importer du téléphone et choisissez le paquet.", de: "Tippe am Telefon auf An Laptop senden. Klicke dann hier auf Vom Telefon importieren und wähle das Paket." },
 
